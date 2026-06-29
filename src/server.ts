@@ -1,11 +1,17 @@
 import Fastify from "fastify";
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import type { IncomingHttpHeaders } from "node:http";
+import { promisify } from "node:util";
+import WebSocket from "ws";
 import { config } from "./config.js";
 import { deriveWireGuardPublicKey } from "./wireguard.js";
-import { verifyGatewaySignature } from "./auth.js";
+import {
+  createGatewayRequestSignature,
+  verifyGatewaySignature,
+} from "./auth.js";
 import type {
+  GatewayVpnRegisterRequest,
+  GatewayVpnRegisterResponse,
   PeerStatus,
   RegisterPeerRequest,
   RegisterPeerResponse,
@@ -23,25 +29,40 @@ if (!config.serverPrivateKey) {
 
 const serverPublicKey = deriveWireGuardPublicKey(config.serverPrivateKey);
 
-const peers: PeerStatus[] = [
-  {
-    publicKey: "peer-a-public-key",
-    allowedIps: ["10.10.0.2/32"],
-    lastHandshakeAt: null,
-    rxBytes: 0,
-    txBytes: 0,
-  },
-];
+const peers: PeerStatus[] = [];
 
-const snapshot = (): ServerSnapshot => ({
-  name: config.serverName,
-  listenPort: config.listenPort,
-  peerNetwork: config.peerNetwork,
-  online: true,
-  loadPercent: 24,
-  publicKey: serverPublicKey,
-  peers,
-});
+let gatewaySocket: WebSocket | null = null;
+let gatewayWsKey: string | null = null;
+let reconnectTimer: NodeJS.Timeout | null = null;
+let heartbeatTimer: NodeJS.Timeout | null = null;
+let reconnectDelayMs = 1000;
+
+function buildManagementUrl(): string {
+  return `${config.gatewayUrl.replace(/\/+$/, "")}`;
+}
+
+function buildEndpoint(): string {
+  return `${config.serverIp}:${config.listenPort}`;
+}
+
+function computeLoadPercent(): number {
+  return Math.min(100, 10 + peers.length * 5);
+}
+
+function snapshot(): ServerSnapshot {
+  return {
+    name: config.serverName,
+    ip: config.serverIp,
+    udpPort: config.listenPort,
+    tcpPort: config.port,
+    managementUrl: `http://${config.serverIp}:${config.port}`,
+    endpoint: buildEndpoint(),
+    online: Boolean(gatewaySocket && gatewaySocket.readyState === WebSocket.OPEN),
+    loadPercent: computeLoadPercent(),
+    publicKey: serverPublicKey,
+    peers,
+  };
+}
 
 async function runWg(args: string[]): Promise<void> {
   await execFileAsync(config.wgToolPath, args, { windowsHide: true });
@@ -75,6 +96,126 @@ function readGatewayAuthHeaders(request: { headers: IncomingHttpHeaders }): {
   }
 
   return { deviceId, signature, serverId, timestamp };
+}
+
+function clearGatewayHeartbeat(): void {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
+function clearGatewayReconnect(): void {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+}
+
+function sendCurrentSnapshot(): void {
+  if (!gatewaySocket || gatewaySocket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  gatewaySocket.send(JSON.stringify(snapshot()));
+}
+
+function scheduleReconnect(): void {
+  if (!gatewayWsKey || reconnectTimer) {
+    return;
+  }
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    void connectGatewayInfoSocket();
+  }, reconnectDelayMs);
+  reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30000);
+}
+
+function connectGatewayInfoSocket(): void {
+  if (!gatewayWsKey) {
+    return;
+  }
+
+  clearGatewayReconnect();
+
+  const socketUrl = new URL(`${buildManagementUrl()}/vpn/info`);
+  socketUrl.searchParams.set("wsKey", gatewayWsKey);
+  const socket = new WebSocket(socketUrl);
+  gatewaySocket = socket;
+
+  socket.on("open", () => {
+    reconnectDelayMs = 1000;
+    clearGatewayHeartbeat();
+    sendCurrentSnapshot();
+    heartbeatTimer = setInterval(() => {
+      sendCurrentSnapshot();
+    }, config.heartbeatIntervalMs);
+  });
+
+  socket.on("close", () => {
+    clearGatewayHeartbeat();
+    if (gatewaySocket === socket) {
+      gatewaySocket = null;
+    }
+    scheduleReconnect();
+  });
+
+  socket.on("error", (error) => {
+    app.log.warn({ error }, "gateway websocket error");
+  });
+}
+
+async function registerWithGateway(): Promise<void> {
+  const gatewayBaseUrl = config.gatewayUrl.replace(/\/+$/, "");
+  const timestamp = Date.now().toString();
+  const body: GatewayVpnRegisterRequest = {
+    ip: config.serverIp,
+    udpPort: config.listenPort,
+    tcpPort: config.port,
+    name: config.serverName,
+  };
+  const signature = createGatewayRequestSignature(config.gatewaySharedSecret, [
+    timestamp,
+    body.ip ?? "",
+    String(body.udpPort ?? 0),
+    String(body.tcpPort ?? 0),
+    body.name ?? "",
+  ]);
+
+  const response = await fetch(`${gatewayBaseUrl}/vpn/register`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-gateway-timestamp": timestamp,
+      "x-gateway-signature": signature,
+    },
+    body: JSON.stringify(body),
+  });
+
+  const data = (await response.json()) as GatewayVpnRegisterResponse;
+  if (!response.ok || !data.ok) {
+    throw new Error("message" in data ? data.message : "failed to register VPN server");
+  }
+
+  gatewayWsKey = data.wsKey;
+  config.serverName = data.server.name;
+}
+
+async function syncGatewayRegistration(): Promise<void> {
+  try {
+    await registerWithGateway();
+    connectGatewayInfoSocket();
+  } catch (error) {
+    app.log.warn({ error }, "failed to register vpn server with gateway");
+    clearGatewayHeartbeat();
+    clearGatewayReconnect();
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      void syncGatewayRegistration();
+    }, reconnectDelayMs);
+    reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30000);
+  }
 }
 
 app.get("/health", async (): Promise<{ ok: true; role: string; snapshot: ServerSnapshot }> => {
@@ -154,11 +295,13 @@ app.post<{ Body: RegisterPeerRequest }>("/peers/register", async (request, reply
     app.log.warn({ error }, "failed to register peer with wg");
   }
 
+  sendCurrentSnapshot();
+
   return {
     ok: true,
     message: "Peer registered",
     peer,
-      vpnPublicKey: serverPublicKey,
+    vpnPublicKey: serverPublicKey,
   };
 });
 
@@ -190,6 +333,8 @@ app.delete<{ Params: { publicKey: string } }>("/peers/:publicKey", async (reques
     app.log.warn({ error }, "failed to remove peer from wg");
   }
 
+  sendCurrentSnapshot();
+
   return {
     ok: true,
     removed: before - peers.length,
@@ -199,6 +344,7 @@ app.delete<{ Params: { publicKey: string } }>("/peers/:publicKey", async (reques
 const start = async (): Promise<void> => {
   try {
     await app.listen({ port: config.port, host: "0.0.0.0" });
+    void syncGatewayRegistration();
   } catch (error) {
     app.log.error(error);
     process.exit(1);
