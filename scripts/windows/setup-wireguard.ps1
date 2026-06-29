@@ -3,7 +3,7 @@ param(
   [string]$TunnelName = $env:TUNNEL_NAME,
 
   [Parameter(Mandatory = $false)]
-  [string]$ListenPort = $env:LISTEN_PORT,
+  [string]$InternalUdpPort = $env:INTERNAL_UDP_PORT,
 
   [Parameter(Mandatory = $false)]
   [string]$ServerAddress = $(if ($env:SERVER_ADDRESS) { $env:SERVER_ADDRESS } else { "10.10.0.1/24" }),
@@ -69,7 +69,7 @@ function Install-WireGuardIfMissing {
 function New-WireGuardConfig {
   param(
     [string]$TunnelName,
-    [string]$ListenPort,
+    [string]$InternalUdpPort,
     [string]$ServerAddress,
     [string]$ServerPrivateKey
   )
@@ -86,7 +86,7 @@ function New-WireGuardConfig {
 [Interface]
 PrivateKey = $ServerPrivateKey
 Address = $ServerAddress
-ListenPort = $ListenPort
+ListenPort = $InternalUdpPort
 "@
   Set-Content -Path $configPath -Value $content -Encoding ASCII
   return $configPath
@@ -116,7 +116,7 @@ if ($InstallManagerService) {
 
 $configPath = New-WireGuardConfig `
   -TunnelName $TunnelName `
-  -ListenPort $ListenPort `
+  -InternalUdpPort $InternalUdpPort `
   -ServerAddress $ServerAddress `
   -ServerPrivateKey $ServerPrivateKey
 

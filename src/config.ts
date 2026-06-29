@@ -1,6 +1,8 @@
 type VpnConfig = {
-  port: number;
-  listenPort: number;
+  httpPort: number;
+  internalUdpPort: number;
+  externalUdpPort: number;
+  externalHttpPort: number;
   serverName: string;
   serverIp: string;
   gatewayUrl: string;
@@ -13,8 +15,10 @@ type VpnConfig = {
 };
 
 export const config: VpnConfig = {
-  port: Number(process.env.PORT ?? 8081),
-  listenPort: Number(process.env.LISTEN_PORT ?? 51820),
+  httpPort: Number(process.env.HTTP_PORT ?? 8081),
+  internalUdpPort: Number(process.env.INTERNAL_UDP_PORT ?? 51820),
+  externalUdpPort: Number(process.env.EXTERNAL_UDP_PORT ?? process.env.INTERNAL_UDP_PORT ?? 51820),
+  externalHttpPort: Number(process.env.EXTERNAL_HTTP_PORT ?? process.env.HTTP_PORT ?? 8081),
   serverName: process.env.SERVER_NAME ?? "GSM-VPN Server",
   serverIp: process.env.SERVER_IP ?? "127.0.0.1",
   gatewayUrl: process.env.GATEWAY_URL ?? "http://127.0.0.1:8080",

@@ -9,8 +9,10 @@ export type PeerStatus = {
 export type ServerSnapshot = {
   name: string;
   ip: string;
-  udpPort: number;
-  tcpPort: number;
+  internalUdpPort: number;
+  externalUdpPort: number;
+  externalHttpPort: number;
+  httpPort: number;
   managementUrl: string;
   endpoint: string;
   online: boolean;
@@ -21,8 +23,10 @@ export type ServerSnapshot = {
 
 export type GatewayVpnRegisterRequest = {
   ip?: string;
-  udpPort?: number;
-  tcpPort?: number;
+  internalUdpPort?: number;
+  externalUdpPort?: number;
+  httpPort?: number;
+  externalHttpPort?: number;
   name?: string;
 };
 
@@ -35,8 +39,10 @@ export type GatewayVpnRegisterResponse =
         id: string;
         name: string;
         ip: string;
-        udpPort: number;
-        tcpPort: number;
+        internalUdpPort: number;
+        externalUdpPort: number;
+        httpPort: number;
+        externalHttpPort: number;
         managementUrl: string;
         endpoint: string;
         loadPercent: number;

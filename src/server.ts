@@ -42,7 +42,7 @@ function buildManagementUrl(): string {
 }
 
 function buildEndpoint(): string {
-  return `${config.serverIp}:${config.listenPort}`;
+  return `${config.serverIp}:${config.externalUdpPort}`;
 }
 
 function computeLoadPercent(): number {
@@ -53,9 +53,11 @@ function snapshot(): ServerSnapshot {
   return {
     name: config.serverName,
     ip: config.serverIp,
-    udpPort: config.listenPort,
-    tcpPort: config.port,
-    managementUrl: `http://${config.serverIp}:${config.port}`,
+    internalUdpPort: config.internalUdpPort,
+    externalUdpPort: config.externalUdpPort,
+    externalHttpPort: config.externalHttpPort,
+    httpPort: config.httpPort,
+    managementUrl: `http://${config.serverIp}:${config.externalHttpPort}`,
     endpoint: buildEndpoint(),
     online: Boolean(gatewaySocket && gatewaySocket.readyState === WebSocket.OPEN),
     loadPercent: computeLoadPercent(),
@@ -171,15 +173,19 @@ async function registerWithGateway(): Promise<void> {
   const timestamp = Date.now().toString();
   const body: GatewayVpnRegisterRequest = {
     ip: config.serverIp,
-    udpPort: config.listenPort,
-    tcpPort: config.port,
+    internalUdpPort: config.internalUdpPort,
+    externalUdpPort: config.externalUdpPort,
+    httpPort: config.httpPort,
+    externalHttpPort: config.externalHttpPort,
     name: config.serverName,
   };
   const signature = createGatewayRequestSignature(config.gatewaySharedSecret, [
     timestamp,
     body.ip ?? "",
-    String(body.udpPort ?? 0),
-    String(body.tcpPort ?? 0),
+    String(body.internalUdpPort ?? 0),
+    String(body.externalUdpPort ?? 0),
+    String(body.httpPort ?? 0),
+    String(body.externalHttpPort ?? 0),
     body.name ?? "",
   ]);
 
@@ -343,7 +349,7 @@ app.delete<{ Params: { publicKey: string } }>("/peers/:publicKey", async (reques
 
 const start = async (): Promise<void> => {
   try {
-    await app.listen({ port: config.port, host: "0.0.0.0" });
+    await app.listen({ port: config.httpPort, host: "0.0.0.0" });
     void syncGatewayRegistration();
   } catch (error) {
     app.log.error(error);
