@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
 type VpnConfig = {
   httpPort: number;
   internalUdpPort: number;
@@ -14,6 +17,20 @@ type VpnConfig = {
   heartbeatIntervalMs: number;
 };
 
+function readServerPrivateKey(): string {
+  const inlineKey = process.env.SERVER_PRIVATE_KEY?.trim();
+  if (inlineKey) {
+    return inlineKey;
+  }
+
+  const keyPath = path.resolve(process.env.SERVER_PRIVATE_KEY_FILE ?? ".data/server-private.key");
+  try {
+    return readFileSync(keyPath, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
 export const config: VpnConfig = {
   httpPort: Number(process.env.HTTP_PORT ?? 8081),
   internalUdpPort: Number(process.env.INTERNAL_UDP_PORT ?? 51820),
@@ -22,7 +39,7 @@ export const config: VpnConfig = {
   serverName: process.env.SERVER_NAME ?? "GSM-VPN Server",
   serverIp: process.env.SERVER_IP ?? "127.0.0.1",
   gatewayUrl: process.env.GATEWAY_URL ?? "http://127.0.0.1:8080",
-  serverPrivateKey: process.env.SERVER_PRIVATE_KEY ?? "",
+  serverPrivateKey: readServerPrivateKey(),
   peerNetwork: process.env.PEER_NETWORK ?? "10.10.0.0/24",
   tunnelName: process.env.TUNNEL_NAME ?? "gsm-vpn",
   gatewaySharedSecret: process.env.GATEWAY_SHARED_SECRET ?? "dev-only-gateway-secret-change-me",

@@ -5,13 +5,9 @@ TUNNEL_NAME="${TUNNEL_NAME:-gsm-vpn}"
 INTERNAL_UDP_PORT="${INTERNAL_UDP_PORT:-51820}"
 SERVER_ADDRESS="${SERVER_ADDRESS:-10.10.0.1/24}"
 SERVER_PRIVATE_KEY="${SERVER_PRIVATE_KEY:-}"
+SERVER_PRIVATE_KEY_FILE="${SERVER_PRIVATE_KEY_FILE:-$HOME/.config/gsm-vpn/${TUNNEL_NAME}.key}"
 PEER_NETWORK="${PEER_NETWORK:-10.10.0.0/24}"
 WG_TOOL_PATH="${WG_TOOL_PATH:-wg}"
-
-if [[ -z "${SERVER_PRIVATE_KEY}" ]]; then
-  echo "SERVER_PRIVATE_KEY is required."
-  exit 1
-fi
 
 if command -v apt-get >/dev/null 2>&1; then
   sudo apt-get update
@@ -28,6 +24,22 @@ elif command -v apk >/dev/null 2>&1; then
   sudo apk add wireguard-tools
 else
   echo "No supported package manager found. Install wireguard-tools manually."
+fi
+
+if [[ -z "${SERVER_PRIVATE_KEY}" ]]; then
+  if [[ -f "${SERVER_PRIVATE_KEY_FILE}" ]]; then
+    SERVER_PRIVATE_KEY="$(cat "${SERVER_PRIVATE_KEY_FILE}")"
+  else
+    mkdir -p "$(dirname "${SERVER_PRIVATE_KEY_FILE}")"
+    SERVER_PRIVATE_KEY="$(node -e "const { generateKeyPairSync } = require('node:crypto'); const pair = generateKeyPairSync('x25519', { publicKeyEncoding: { format: 'der', type: 'spki' }, privateKeyEncoding: { format: 'der', type: 'pkcs8' } }); process.stdout.write(Buffer.from(pair.privateKey).subarray(-32).toString('base64'));")"
+    printf '%s' "${SERVER_PRIVATE_KEY}" > "${SERVER_PRIVATE_KEY_FILE}"
+    chmod 600 "${SERVER_PRIVATE_KEY_FILE}"
+  fi
+fi
+
+if [[ -z "${SERVER_PRIVATE_KEY}" ]]; then
+  echo "SERVER_PRIVATE_KEY could not be determined."
+  exit 1
 fi
 
 if command -v sysctl >/dev/null 2>&1; then

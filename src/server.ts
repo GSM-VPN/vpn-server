@@ -41,6 +41,19 @@ function buildManagementUrl(): string {
   return `${config.gatewayUrl.replace(/\/+$/, "")}`;
 }
 
+function buildManagementWebSocketUrl(): string {
+  const gatewayBaseUrl = buildManagementUrl();
+  if (gatewayBaseUrl.startsWith("https://")) {
+    return `wss://${gatewayBaseUrl.slice("https://".length)}`;
+  }
+
+  if (gatewayBaseUrl.startsWith("http://")) {
+    return `ws://${gatewayBaseUrl.slice("http://".length)}`;
+  }
+
+  return gatewayBaseUrl;
+}
+
 function buildEndpoint(): string {
   return `${config.serverIp}:${config.externalUdpPort}`;
 }
@@ -141,7 +154,7 @@ function connectGatewayInfoSocket(): void {
 
   clearGatewayReconnect();
 
-  const socketUrl = new URL(`${buildManagementUrl()}/vpn/info`);
+  const socketUrl = new URL(`${buildManagementWebSocketUrl()}/vpn/info`);
   socketUrl.searchParams.set("wsKey", gatewayWsKey);
   const socket = new WebSocket(socketUrl);
   gatewaySocket = socket;
@@ -189,23 +202,68 @@ async function registerWithGateway(): Promise<void> {
     body.name ?? "",
   ]);
 
-  const response = await fetch(`${gatewayBaseUrl}/vpn/register`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-gateway-timestamp": timestamp,
-      "x-gateway-signature": signature,
-    },
-    body: JSON.stringify(body),
-  });
+  let healthResponse: Response;
+  try {
+    healthResponse = await fetch(`${gatewayBaseUrl}/health`);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`failed to contact gateway health at ${gatewayBaseUrl}/health: ${detail}`);
+  }
 
-  const data = (await response.json()) as GatewayVpnRegisterResponse;
-  if (!response.ok || !data.ok) {
-    throw new Error("message" in data ? data.message : "failed to register VPN server");
+  if (!healthResponse.ok) {
+    throw new Error(`gateway health check failed [status=${healthResponse.status} url=${gatewayBaseUrl}/health]`);
+  }
+
+  let healthText = "";
+  try {
+    healthText = await healthResponse.text();
+  } catch {
+    healthText = "";
+  }
+
+  if (healthText) {
+    app.log.info({ gatewayHealth: healthText, gatewayUrl: gatewayBaseUrl }, "gateway health response");
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${gatewayBaseUrl}/vpn/register`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-gateway-timestamp": timestamp,
+        "x-gateway-signature": signature,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`failed to contact gateway at ${gatewayBaseUrl}: ${detail}`);
+  }
+
+  const responseText = await response.text();
+  let data: GatewayVpnRegisterResponse | null = null;
+  try {
+    data = JSON.parse(responseText) as GatewayVpnRegisterResponse;
+  } catch {
+    // Keep the raw response text for debugging below.
+  }
+
+  if (!response.ok || !data?.ok) {
+    const message =
+      data && "message" in data
+        ? data.message
+        : responseText.trim() || `failed to register VPN server (${response.status})`;
+    throw new Error(`${message} [status=${response.status} url=${gatewayBaseUrl}]`);
+  }
+
+  if (typeof data.wsKey !== "string" || !data.wsKey.trim()) {
+    throw new Error(`gateway register response missing wsKey [status=${response.status} url=${gatewayBaseUrl}]`);
   }
 
   gatewayWsKey = data.wsKey;
   config.serverName = data.server.name;
+  app.log.info({ gatewayUrl: gatewayBaseUrl, wsKeyPresent: true }, "vpn server registered with gateway");
 }
 
 async function syncGatewayRegistration(): Promise<void> {
@@ -213,7 +271,13 @@ async function syncGatewayRegistration(): Promise<void> {
     await registerWithGateway();
     connectGatewayInfoSocket();
   } catch (error) {
-    app.log.warn({ error }, "failed to register vpn server with gateway");
+    app.log.warn(
+      {
+        error: error instanceof Error ? error.message : String(error),
+        gatewayUrl: config.gatewayUrl,
+      },
+      "failed to register vpn server with gateway"
+    );
     clearGatewayHeartbeat();
     clearGatewayReconnect();
     reconnectTimer = setTimeout(() => {

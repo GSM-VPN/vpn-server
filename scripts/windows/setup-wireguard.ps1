@@ -18,6 +18,9 @@ param(
   [string]$ServerPrivateKey = $env:SERVER_PRIVATE_KEY,
 
   [Parameter(Mandatory = $false)]
+  [string]$ServerPrivateKeyFile = $(if ($env:SERVER_PRIVATE_KEY_FILE) { $env:SERVER_PRIVATE_KEY_FILE } else { Join-Path $env:ProgramData "GSM-VPN\$($env:TUNNEL_NAME).key" }),
+
+  [Parameter(Mandatory = $false)]
   [switch]$InstallManagerService,
 
   [Parameter(Mandatory = $false)]
@@ -112,6 +115,24 @@ if ($PeerNetwork) {
 
 if ($InstallManagerService) {
   Start-Process -FilePath $wireguardExe -ArgumentList "/installmanagerservice" -Wait
+}
+
+$keyDir = Split-Path -Parent $ServerPrivateKeyFile
+if (-not (Test-Path $keyDir)) {
+  New-Item -ItemType Directory -Force -Path $keyDir | Out-Null
+}
+
+if (-not $ServerPrivateKey) {
+  if (Test-Path $ServerPrivateKeyFile) {
+    $ServerPrivateKey = (Get-Content -Path $ServerPrivateKeyFile -Raw).Trim()
+  } else {
+    $ServerPrivateKey = (node -e "const { generateKeyPairSync } = require('node:crypto'); const pair = generateKeyPairSync('x25519', { publicKeyEncoding: { format: 'der', type: 'spki' }, privateKeyEncoding: { format: 'der', type: 'pkcs8' } }); process.stdout.write(Buffer.from(pair.privateKey).subarray(-32).toString('base64'));")
+    Set-Content -Path $ServerPrivateKeyFile -Value $ServerPrivateKey -Encoding ASCII
+  }
+}
+
+if (-not $ServerPrivateKey) {
+  throw "ServerPrivateKey could not be determined."
 }
 
 $configPath = New-WireGuardConfig `
